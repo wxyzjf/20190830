@@ -1,0 +1,109 @@
+/home/adwbat/BP/script [12]> cat dw_load_ctr_cdr.ksh
+#!/bin/ksh
+
+export DWHOME=${DWHOME:-/app/adwbat/BP}
+export SCRIPTDIR=${DWHOME}/script
+scriptname=`basename $0 |  cut -f1 -d'.'`
+. $SCRIPTDIR/dw_master_zfs.ksh $scriptname N
+
+jobmsg="${scriptname}"
+startup "${jobmsg}"
+
+getdate 0 optdate "%Y%m%d"
+getdate 3 clsdate "%Y%m%d"
+
+INPUTCTRDIR=${INPUTDIR}/CTR_CDR/
+CTRDIR=${DATADIR}/CTR_CDR
+PROCESSDIR=${CTRDIR}/process
+COMPLETEDIR=${CTRDIR}/complete
+ERRORDIR=${CTRDIR}/Error
+
+PROC_NUM=3
+for p in `seq $PROC_NUM`;
+do
+if [ $p -le $PROC_NUM ];then
+  if [ ! -d "${CTRDIR}/process/proc_${p}" ];then
+    mkdir -p ${CTRDIR}/process/proc_${p}
+  fi
+fi
+done
+
+test -d ${COMPLETEDIR}/$optdate || mkdir -p ${COMPLETEDIR}/$optdate
+
+CheckFileCnt ${INPUTCTRDIR} "A20" filecnt
+
+rm -rf ${CTRDIR}/complete/$clsdate
+rm ${LDRDIR}/CTR_CDR_*
+
+CVTTIME=`date +'%Y-%m-%d %H:%M:%S'`
+
+#dispatch_file ${PROC_NUM} ${INPUTCTRDIR} ${CTRDIR}/process "*.csv.gz"
+dispatch_file_head ${PROC_NUM} ${INPUTCTRDIR} ${CTRDIR}/process "*.csv.gz" 100000
+
+echo "[Step 1.1 convert Files  .... ]  `date`" | tee -a $LOGFILE
+for d in `seq $PROC_NUM`
+do
+  {
+     PROCLOG=${CTRDIR}/${scriptname}_proc_${d}.log
+     PROCLIST=${CTRDIR}/CTR_CDR_PROC_${d}.lst
+     PROCBAD=${CTRDIR}/ctr_error.txt
+     cat /dev/null > ${PROCBAD}
+     cat /dev/null > ${PROCLOG}
+     cat /dev/null > ${PROCLIST}
+
+
+##     perl $SCRIPTDIR/dw_load_ctr_cdr.pl ${PROCESSDIR}/proc_$d ${PROCBAD} ${PROCLIST}
+     perl $SCRIPTDIR/dw_load_ctr_cdr.pl ${PROCESSDIR}/proc_$d ${PROCBAD} \
+     "$CVTTIME" ${PROCLIST} | split -d -C 9221225472 - ${CTRDIR}/CTR_CDR_PROC_${d}_split
+     if [ $? -ne 0 ];then
+        echo "Process $d Convert Files error" | tee -a ${PROCLOG}
+
+        echo "Move Error Files to ${ERRORDIR}/ " | tee -a ${PROCLOG}
+        mv  ${CTRDIR}/process/proc_${d}/* ${ERRORDIR}/
+        errhandle "Process $d Convert or Split Files error"
+        exit 1
+     else
+        #mv ${CTRDIR}/process/proc_${d}/* ${CTRDIR}/complete/$optdate
+        echo "[ Move raw data to complete folder ... ] `date`" | tee -a $LOGFILE
+        for f in `find ${CTRDIR}/process/proc_${d} -name "*gz"`
+        do
+                mv $f ${CTRDIR}/complete/$optdate
+        done
+     fi
+}&
+done
+wait_subproc
+
+
+chgdir ${CTRDIR}
+CheckFileCnt ${CTRDIR} "CTR_CDR_PROC_*_split*" filecnt
+
+mv CTR_CDR_PROC_*_split* ${LDRDIR}
+if [ $? -ne 0 ];then
+        errhandle "move file error"
+        exit 1
+fi
+
+echo "[Step 1.2 loaddata  .... ]  `date`" | tee -a $LOGFILE
+
+ldrfilelist=`ls ${LDRDIR}/|grep CTR_CDR |awk '{printf "\047\047"$0"\047\047,"}'|sed -e "s/,$//"`
+echo "=>>Loading Files :$ldrfilelist" |tee -a $LOGFILE
+
+cat $SQLDIR/dw_ctr_cdr_xtern_tpl.sql|sed -e "s/\[LDRFILELIST\]/${ldrfilelist}/" > $TMPDIR/tmp_dw_ctr_cdr_xtern_tpl.sql
+if [ $? -ne 0 ];then
+        errhandle "prepare xtern file error"
+        exit 1
+fi
+runsql $TMPDIR/tmp_dw_ctr_cdr_xtern_tpl.sql
+
+runsql  $SQLDIR/dw_load_ctr_cdr_00.sql
+
+runsql  $SQLDIR/dw_load_ctr_cdr_01.sql
+
+runsql  $SQLDIR/dw_load_ctr_cdr_02.sql
+
+echo "finished load CTR_CDR ..." | tee -a ${LOGFILE}
+
+cleanup "${jobmsg}"
+
+exit 0
