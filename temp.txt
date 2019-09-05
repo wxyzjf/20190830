@@ -1,0 +1,15 @@
+select ???
+   ' ' as Cust_Num,
+???temptb.Subr_num as Subr_num,
+???temptb.TRX_Date as TRX_Date,
+???CASE WHEN temptb.UE_CATEGORY_FLEX='26' THEN 'Y' END AS Dual_SIM_FLg,
+???sysdate,
+???sysdate
+from
+(select evt.imsi,max(g.subr_num)keep (dense_rank first order by call_start_time desc) as Subr_num,
+       max(g.hs_mdl) ,evt.TRX_Date,evt.UE_CATEGORY_FLEX
+from (SELECT tmpa.Trx_hk_date,tmpa.Imsi,tmpa.UE_CATEGORY_FLEX,distinct(tmpa.TRX_Date) as TRX_Date
+??????FROM bp.CNSS_evt4125_test2 tmpa) evt 
+inner join gprs g
+on evt.imsi = g.imsi and g.CALL_START_DATE = evt.Trx_hk_date
+group by evt.imsi) temptb;
